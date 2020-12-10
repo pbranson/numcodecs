@@ -57,6 +57,18 @@ cdef extern from "blosc.h":
     void blosc_cbuffer_metainfo(const void* cbuffer, size_t* typesize, int* flags)
 
 
+cdef extern from "shuffle.h":
+
+    void blosc_internal_shuffle(const size_t bytesoftype, const size_t blocksize,
+                       const char* const _src, char* _dest) nogil
+    int blosc_internal_bitshuffle(const size_t bytesoftype, const size_t blocksize,
+                          const char* const _src, char* _dest, void* _tmp) 
+    void blosc_internal_unshuffle(const size_t bytesoftype, const size_t blocksize,
+                         const char* const _src, char* _dest) nogil
+    int blosc_internal_bitunshuffle(const size_t bytesoftype, const size_t blocksize,
+                            const char* const _src, char* _dest, void* _tmp)
+
+
 MAX_OVERHEAD = BLOSC_MAX_OVERHEAD
 MAX_BUFFERSIZE = BLOSC_MAX_BUFFERSIZE
 MAX_THREADS = BLOSC_MAX_THREADS
@@ -466,7 +478,191 @@ def decompress_partial(source, start, nitems, dest=None):
         raise RuntimeError('error during blosc partial decompression: %d', ret)
 
     return dest
-        
+
+
+def blosc_shuffle(source, int shuffle=SHUFFLE, int blocksize=AUTOBLOCKS):
+    """Suffle data.
+
+    Parameters
+    ----------
+    source : bytes-like
+        Data to be compressed. Can be any object supporting the buffer
+        protocol.
+    shuffle : int
+        Either NOSHUFFLE (0), SHUFFLE (1), BITSHUFFLE (2) or AUTOSHUFFLE (-1). If -1
+        (default), bit-shuffle will be used for buffers with itemsize 1,
+        and byte-shuffle will be used otherwise.
+    blocksize : int
+        The requested size of the compressed blocks.  If 0, an automatic blocksize will
+        be used.
+
+    Returns
+    -------
+    dest : bytes
+        Shuffled data.
+
+    """
+
+    cdef:
+        char *source_ptr
+        char *dest_ptr
+        Buffer source_buffer
+        size_t nbytes, itemsize
+        int cbytes
+        bytes dest
+
+    # setup source buffer
+    print(PyBUF_ANY_CONTIGUOUS)
+    
+    source_buffer = Buffer(source, PyBUF_ANY_CONTIGUOUS)
+    source_ptr = source_buffer.ptr
+    nbytes = source_buffer.nbytes
+    itemsize = source_buffer.itemsize
+    print(source_ptr)
+    print(source)
+    print(nbytes)
+    print(itemsize)
+
+    # determine shuffle
+    if shuffle == AUTOSHUFFLE:
+        if itemsize == 1:
+            shuffle = BITSHUFFLE
+        else:
+            shuffle = SHUFFLE
+    elif shuffle not in [NOSHUFFLE, SHUFFLE, BITSHUFFLE]:
+        raise ValueError('invalid shuffle argument; expected -1, 0, 1 or 2, found %r' %
+                         shuffle)
+
+    try:
+
+        # setup destination
+        dest = PyBytes_FromStringAndSize(NULL, nbytes + BLOSC_MAX_OVERHEAD)
+        dest_ptr = PyBytes_AS_STRING(dest)
+
+        # perform compression
+        if _get_use_threads():
+            # allow blosc to use threads internally
+
+            # N.B., we are using blosc's global context, and so we need to use a lock
+            # to ensure no-one else can modify the global context while we're setting it
+            # up and using it.
+            with mutex:
+
+                # initialise blosc 
+                blosc_init()
+
+                # set blocksize
+                blosc_set_blocksize(blocksize)
+
+                # perform compression
+                if shuffle == SHUFFLE:
+                    with nogil:
+                        blosc_internal_shuffle(nbytes, blocksize, source_ptr, dest_ptr)
+                else:
+                    raise ValueError('Not Implemented!')
+        else:
+            raise ValueError('Not Implemented!')
+#            with nogil:
+#                cbytes = blosc_compress_ctx(clevel, shuffle, itemsize, nbytes, source_ptr,
+#                                            dest_ptr, nbytes + BLOSC_MAX_OVERHEAD,
+#                                            cname, blocksize, 1)
+
+    finally:
+
+        # release buffers
+        source_buffer.release()
+
+    return dest
+
+
+def blosc_unshuffle(source, int shuffle=SHUFFLE, int blocksize=AUTOBLOCKS):
+    """Unsuffle data.
+
+    Parameters
+    ----------
+    source : bytes-like
+        Data to be compressed. Can be any object supporting the buffer
+        protocol.
+    shuffle : int
+        Either NOSHUFFLE (0), SHUFFLE (1), BITSHUFFLE (2) or AUTOSHUFFLE (-1). If -1
+        (default), bit-shuffle will be used for buffers with itemsize 1,
+        and byte-shuffle will be used otherwise.
+    blocksize : int
+        The requested size of the compressed blocks.  If 0, an automatic blocksize will
+        be used.
+
+    Returns
+    -------
+    dest : bytes
+        Unshuffled data.
+
+    """
+
+    cdef:
+        char *source_ptr
+        char *dest_ptr
+        Buffer source_buffer
+        size_t nbytes, itemsize
+        int cbytes
+        bytes dest
+
+    # setup source buffer
+    source_buffer = Buffer(source, PyBUF_ANY_CONTIGUOUS)
+    source_ptr = source_buffer.ptr
+    nbytes = source_buffer.nbytes
+    itemsize = source_buffer.itemsize
+
+    # determine shuffle
+    if shuffle == AUTOSHUFFLE: 
+        if itemsize == 1:
+            shuffle = BITSHUFFLE
+        else:
+            shuffle = SHUFFLE
+    elif shuffle not in [NOSHUFFLE, SHUFFLE, BITSHUFFLE]:
+        raise ValueError('invalid shuffle argument; expected -1, 0, 1 or 2, found %r' %
+                         shuffle)
+
+    try:
+
+        # setup destination
+        dest = PyBytes_FromStringAndSize(NULL, nbytes + BLOSC_MAX_OVERHEAD)
+        dest_ptr = PyBytes_AS_STRING(dest)
+
+        # perform compression
+        if _get_use_threads():
+            # allow blosc to use threads internally
+
+            # N.B., we are using blosc's global context, and so we need to use a lock
+            # to ensure no-one else can modify the global context while we're setting it
+            # up and using it.
+            with mutex:
+
+                # initialise blosc 
+                blosc_init()
+
+                # set blocksize
+                blosc_set_blocksize(blocksize)
+
+                # perform unshuffle
+                if shuffle == SHUFFLE:
+                    print('unshuffle')
+                    with nogil:
+                        blosc_internal_unshuffle(nbytes, blocksize, source_ptr, dest_ptr)
+                else:
+                    raise ValueError('Not Implemented!')
+        else:
+            raise ValueError('Not Implemented!')
+#            with nogil:
+#                cbytes = blosc_compress_ctx(clevel, shuffle, itemsize, nbytes, source_ptr,
+#                                            dest_ptr, nbytes + BLOSC_MAX_OVERHEAD,
+#                                            cname, blocksize, 1)
+
+    finally:
+
+        # release buffers
+        source_buffer.release()
+
+    return dest
 
 # set the value of this variable to True or False to override the
 # default adaptive behaviour
@@ -511,6 +707,49 @@ def _get_use_threads():
 
 _shuffle_repr = ['AUTOSHUFFLE', 'NOSHUFFLE', 'SHUFFLE', 'BITSHUFFLE']
 
+class Shuffle(Codec):
+    """Codec providing shuffle using the Blosc library.
+
+    Parameters
+    ----------
+    shuffle : integer, optional
+        Either NOSHUFFLE (0), SHUFFLE (1), BITSHUFFLE (2) or AUTOSHUFFLE (-1). If -1
+        (default), bit-shuffle will be used for buffers with itemsize 1,
+        and byte-shuffle will be used otherwise.
+    blocksize : int
+        The requested size of the compressed blocks.  If 0 (default), an automatic
+        blocksize will be used.
+
+    See Also
+    --------
+    numcodecs.blosc.Blosc
+    """
+
+    codec_id = 'shuffle'
+    NOSHUFFLE = NOSHUFFLE
+    SHUFFLE = SHUFFLE
+    BITSHUFFLE = BITSHUFFLE
+    AUTOSHUFFLE = AUTOSHUFFLE
+    max_buffer_size = 2**31 - 1
+
+    def __init__(self, shuffle=SHUFFLE, blocksize=AUTOBLOCKS):
+        self.shuffle = shuffle
+        self.blocksize = blocksize
+
+    def encode(self, buf):
+        buf = ensure_contiguous_ndarray(buf, self.max_buffer_size)
+        return blosc_shuffle(buf, self.shuffle, self.blocksize)
+
+    def decode(self, buf, out=None):
+        buf = ensure_contiguous_ndarray(buf, self.max_buffer_size)
+        return blosc_unshuffle(buf, self.shuffle, self.blocksize)
+
+    def __repr__(self):
+        r = '%s(shuffle=%s, blocksize=%s)' % \
+            (type(self).__name__,
+             _shuffle_repr[self.shuffle + 1],
+             self.blocksize)
+        return r
 
 class Blosc(Codec):
     """Codec providing compression using the Blosc meta-compressor.
